@@ -322,7 +322,14 @@ pub fn http_request_streaming_callback(
 }
 
 pub fn get_asset_properties(key: AssetKey) -> AssetProperties {
-    with_state(|s| s.get_asset_properties(key).unwrap_or_else(|msg| trap(&msg)))
+    with_state(|s| {
+        s.get_asset_properties(key).unwrap_or_else(|_| AssetProperties {
+            max_age: None,
+            headers: None,
+            allow_raw_access: None,
+            is_aliased: None,
+        })
+    })
 }
 
 pub fn set_asset_properties(arg: SetAssetPropertiesArguments) {
