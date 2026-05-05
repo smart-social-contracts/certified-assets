@@ -440,8 +440,13 @@ impl State {
     }
 
     pub fn create_asset(&mut self, arg: CreateAssetArguments) -> Result<(), String> {
-        if self.assets.contains_key(&arg.key) {
-            return Err("asset already exists".to_string());
+        if let Some(existing) = self.assets.get_mut(&arg.key) {
+            existing.content_type = arg.content_type;
+            existing.max_age = arg.max_age;
+            existing.headers = arg.headers;
+            existing.is_aliased = arg.enable_aliasing;
+            existing.allow_raw_access = arg.allow_raw_access;
+            return Ok(());
         }
 
         self.assets.insert(

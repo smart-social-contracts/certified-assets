@@ -1847,7 +1847,7 @@ fn ic_env_cookie_multiple_public_env_vars() {
 }
 
 #[test]
-fn create_asset_fails_if_asset_exists() {
+fn create_asset_is_idempotent_if_asset_exists() {
     let mut state = State::default();
     let system_context = mock_system_context();
     const FILE_BODY: &[u8] = b"<!DOCTYPE html><html>file body</html>";
@@ -1859,19 +1859,19 @@ fn create_asset_fails_if_asset_exists() {
             .with_encoding("identity", vec![FILE_BODY])],
     );
 
-    assert!(
-        state
-            .create_asset(CreateAssetArguments {
-                key: "/contents.html".to_string(),
-                content_type: "text/html".to_string(),
-                max_age: None,
-                headers: None,
-                allow_raw_access: None,
-                enable_aliasing: None,
-            })
-            .unwrap_err()
-            == "asset already exists"
-    );
+    state
+        .create_asset(CreateAssetArguments {
+            key: "/contents.html".to_string(),
+            content_type: "text/plain".to_string(),
+            max_age: Some(300),
+            headers: None,
+            allow_raw_access: None,
+            enable_aliasing: None,
+        })
+        .unwrap();
+
+    let props = state.get_asset_properties("/contents.html".to_string()).unwrap();
+    assert_eq!(props.max_age, Some(300));
 }
 
 #[test]
