@@ -348,6 +348,18 @@ pub fn configure(arg: ConfigureArguments) {
     with_state_mut(|s| s.configure(arg))
 }
 
+pub fn pin_directory(prefix: String) {
+    with_state_mut(|s| s.pin_directory(prefix))
+}
+
+pub fn unpin_directory(prefix: String) {
+    with_state_mut(|s| s.unpin_directory(&prefix))
+}
+
+pub fn list_pinned_directories() -> Vec<String> {
+    with_state(|s| s.list_pinned_directories())
+}
+
 pub fn validate_configure(arg: ConfigureArguments) -> Result<String, String> {
     Ok(format!("configure: {arg:?}"))
 }
@@ -751,6 +763,24 @@ macro_rules! export_canister_methods {
         #[$crate::ic_certified_assets_candid_method(update)]
         fn configure(arg: types::ConfigureArguments) {
             $crate::configure(arg)
+        }
+
+        #[$crate::ic_certified_assets_update(guard = "__ic_certified_assets_can_commit")]
+        #[$crate::ic_certified_assets_candid_method(update)]
+        fn pin_directory(arg: types::PinDirectoryArguments) {
+            $crate::pin_directory(arg.prefix)
+        }
+
+        #[$crate::ic_certified_assets_update(guard = "__ic_certified_assets_can_commit")]
+        #[$crate::ic_certified_assets_candid_method(update)]
+        fn unpin_directory(arg: types::UnpinDirectoryArguments) {
+            $crate::unpin_directory(arg.prefix)
+        }
+
+        #[$crate::ic_certified_assets_query]
+        #[$crate::ic_certified_assets_candid_method(query)]
+        fn list_pinned_directories() -> Vec<String> {
+            $crate::list_pinned_directories()
         }
 
         #[$crate::ic_certified_assets_update]

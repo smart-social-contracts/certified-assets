@@ -8,7 +8,7 @@ use crate::types::{
     AssetProperties, BatchId, BatchOperation, CommitBatchArguments, CommitProposedBatchArguments,
     ComputeEvidenceArguments, CreateAssetArguments, CreateChunkArg, DeleteAssetArguments,
     DeleteBatchArguments, GetArg, GetChunkArg, ListRequest, SetAssetContentArguments,
-    SetAssetPropertiesArguments,
+    SetAssetPropertiesArguments, UnsetAssetContentArguments,
 };
 use crate::url::{url_decode, url_encode, UrlDecodeError};
 use crate::CreateChunksArg;
@@ -5273,5 +5273,353 @@ mod compute_state_hash {
         // Verify we can call it again
         let result = run_computation_until_completion(|_progress| state.compute_state_hash());
         assert!(result.is_ok());
+    }
+}
+
+mod pinned_directories {
+    use super::*;
+
+    #[test]
+    fn pin_unpin_list_roundtrip() {
+        let mut state = State::default();
+        assert!(state.list_pinned_directories().is_empty());
+
+        state.pin_directory("/images/".to_string());
+        state.pin_directory("/branding/".to_string());
+        let pinned = state.list_pinned_directories();
+        assert_eq!(pinned.len(), 2);
+        assert!(pinned.contains(&"/images/".to_string()));
+        assert!(pinned.contains(&"/branding/".to_string()));
+
+        state.unpin_directory("/images/");
+        let pinned = state.list_pinned_directories();
+        assert_eq!(pinned, vec!["/branding/".to_string()]);
+
+        state.unpin_directory("/branding/");
+        assert!(state.list_pinned_directories().is_empty());
+    }
+
+    #[test]
+    fn delete_asset_skips_pinned() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![
+                AssetBuilder::new("/images/logo.png", "image/png")
+                    .with_encoding("identity", vec![b"PNG_DATA"]),
+                AssetBuilder::new("/index.html", "text/html")
+                    .with_encoding("identity", vec![b"<html></html>"]),
+            ],
+        );
+
+        state.pin_directory("/images/".to_string());
+
+        state.delete_asset(DeleteAssetArguments {
+            key: "/images/logo.png".to_string(),
+        });
+        state.delete_asset(DeleteAssetArguments {
+            key: "/index.html".to_string(),
+        });
+
+        assert!(
+            state.get_asset_properties("/images/logo.png".to_string()).is_ok(),
+            "pinned asset should survive delete"
+        );
+        assert!(
+            state.get_asset_properties("/index.html".to_string()).is_err(),
+            "unpinned asset should be deleted"
+        );
+    }
+
+    #[test]
+    fn delete_asset_via_batch_skips_pinned() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![
+                AssetBuilder::new("/images/bg.jpg", "image/jpeg")
+                    .with_encoding("identity", vec![b"JPEG_DATA"]),
+                AssetBuilder::new("/app.js", "application/javascript")
+                    .with_encoding("identity", vec![b"console.log(1)"]),
+            ],
+        );
+
+        state.pin_directory("/images/".to_string());
+
+        let batch_id = state.create_batch(&system_context).unwrap();
+        let args = CommitBatchArguments {
+            batch_id: batch_id.clone(),
+            operations: vec![
+                BatchOperation::DeleteAsset(DeleteAssetArguments {
+                    key: "/images/bg.jpg".to_string(),
+                }),
+                BatchOperation::DeleteAsset(DeleteAssetArguments {
+                    key: "/app.js".to_string(),
+                }),
+            ],
+        };
+        run_computation_until_completion(|progress| {
+            state.commit_batch(&args, progress, &system_context)
+        })
+        .unwrap();
+
+        assert!(
+            state.get_asset_properties("/images/bg.jpg".to_string()).is_ok(),
+            "pinned asset should survive batch delete"
+        );
+        assert!(
+            state.get_asset_properties("/app.js".to_string()).is_err(),
+            "unpinned asset should be deleted in batch"
+        );
+    }
+
+    #[test]
+    fn unset_asset_content_skips_pinned() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![AssetBuilder::new("/images/icon.svg", "image/svg+xml")
+                .with_encoding("identity", vec![b"<svg></svg>"])],
+        );
+
+        state.pin_directory("/images/".to_string());
+
+        let result = state.unset_asset_content(UnsetAssetContentArguments {
+            key: "/images/icon.svg".to_string(),
+            content_encoding: "identity".to_string(),
+        });
+        assert!(result.is_ok());
+
+        let response = certified_http_request(
+            &state,
+            RequestBuilder::get("/images/icon.svg")
+                .with_header("Accept-Encoding", "identity")
+                .build(),
+        );
+        assert_eq!(response.status_code, 200, "pinned asset encoding should be preserved");
+    }
+
+    #[test]
+    fn clear_preserves_pinned_assets() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![
+                AssetBuilder::new("/images/logo.png", "image/png")
+                    .with_encoding("identity", vec![b"LOGO"]),
+                AssetBuilder::new("/images/bg.jpg", "image/jpeg")
+                    .with_encoding("identity", vec![b"BG"]),
+                AssetBuilder::new("/index.html", "text/html")
+                    .with_encoding("identity", vec![b"<html></html>"]),
+                AssetBuilder::new("/app.js", "application/javascript")
+                    .with_encoding("identity", vec![b"js"]),
+            ],
+        );
+
+        state.pin_directory("/images/".to_string());
+        state.clear();
+
+        assert!(
+            state.get_asset_properties("/images/logo.png".to_string()).is_ok(),
+            "pinned asset /images/logo.png should survive clear"
+        );
+        assert!(
+            state.get_asset_properties("/images/bg.jpg".to_string()).is_ok(),
+            "pinned asset /images/bg.jpg should survive clear"
+        );
+        assert!(
+            state.get_asset_properties("/index.html".to_string()).is_err(),
+            "unpinned asset /index.html should be cleared"
+        );
+        assert!(
+            state.get_asset_properties("/app.js".to_string()).is_err(),
+            "unpinned asset /app.js should be cleared"
+        );
+    }
+
+    #[test]
+    fn clear_without_pins_clears_all() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![
+                AssetBuilder::new("/a.html", "text/html")
+                    .with_encoding("identity", vec![b"a"]),
+                AssetBuilder::new("/b.html", "text/html")
+                    .with_encoding("identity", vec![b"b"]),
+            ],
+        );
+
+        state.clear();
+
+        assert!(state.get_asset_properties("/a.html".to_string()).is_err());
+        assert!(state.get_asset_properties("/b.html".to_string()).is_err());
+    }
+
+    #[test]
+    fn unpin_then_delete_works() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![AssetBuilder::new("/images/logo.png", "image/png")
+                .with_encoding("identity", vec![b"PNG"])],
+        );
+
+        state.pin_directory("/images/".to_string());
+
+        state.delete_asset(DeleteAssetArguments {
+            key: "/images/logo.png".to_string(),
+        });
+        assert!(
+            state.get_asset_properties("/images/logo.png".to_string()).is_ok(),
+            "pinned asset should not be deleted"
+        );
+
+        state.unpin_directory("/images/");
+
+        state.delete_asset(DeleteAssetArguments {
+            key: "/images/logo.png".to_string(),
+        });
+        assert!(
+            state.get_asset_properties("/images/logo.png".to_string()).is_err(),
+            "unpinned asset should now be deletable"
+        );
+    }
+
+    #[test]
+    fn pinned_prefixes_survive_stable_roundtrip() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![AssetBuilder::new("/images/logo.png", "image/png")
+                .with_encoding("identity", vec![b"PNG"])],
+        );
+
+        state.pin_directory("/images/".to_string());
+        state.pin_directory("/branding/".to_string());
+
+        let stable_state: StableStateV2 = state.into();
+
+        let bytes = serde_cbor::to_vec(&stable_state).unwrap();
+        let restored_stable: StableStateV2 = serde_cbor::from_slice(&bytes).unwrap();
+
+        let restored_state: State = restored_stable.into();
+        let pinned = restored_state.list_pinned_directories();
+        assert_eq!(pinned.len(), 2);
+        assert!(pinned.contains(&"/images/".to_string()));
+        assert!(pinned.contains(&"/branding/".to_string()));
+
+        assert!(
+            restored_state.get_asset_properties("/images/logo.png".to_string()).is_ok(),
+            "asset should survive stable roundtrip"
+        );
+    }
+
+    #[test]
+    fn backward_compat_deserialize_without_pinned_prefixes() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![AssetBuilder::new("/test.html", "text/html")
+                .with_encoding("identity", vec![b"<html></html>"])],
+        );
+
+        let stable: StableStateV2 = state.into();
+        let bytes = serde_cbor::to_vec(&stable).unwrap();
+
+        // Simulate old CBOR without pinned_prefixes by deserializing as a map,
+        // removing the field, and re-serializing
+        let mut map: serde_cbor::Value = serde_cbor::from_slice(&bytes).unwrap();
+        if let serde_cbor::Value::Map(ref mut m) = map {
+            m.retain(|k, _| {
+                k != &serde_cbor::Value::Text("pinned_prefixes".to_string())
+            });
+        }
+        let trimmed_bytes = serde_cbor::to_vec(&map).unwrap();
+
+        let restored: StableStateV2 = serde_cbor::from_slice(&trimmed_bytes).unwrap();
+        let restored_state: State = restored.into();
+        assert!(
+            restored_state.list_pinned_directories().is_empty(),
+            "missing pinned_prefixes should default to empty"
+        );
+        assert!(
+            restored_state.get_asset_properties("/test.html".to_string()).is_ok(),
+            "asset should survive restore"
+        );
+    }
+
+    #[test]
+    fn set_asset_content_allowed_for_pinned_assets() {
+        let mut state = State::default();
+        let system_context = mock_system_context();
+
+        create_assets(
+            &mut state,
+            &system_context,
+            vec![AssetBuilder::new("/images/logo.png", "image/png")
+                .with_encoding("identity", vec![b"OLD_PNG"])],
+        );
+
+        state.pin_directory("/images/".to_string());
+
+        let batch_id = state.create_batch(&system_context).unwrap();
+        let chunk_id = state
+            .create_chunk(
+                CreateChunkArg {
+                    batch_id: batch_id.clone(),
+                    content: ByteBuf::from(b"NEW_PNG".to_vec()),
+                },
+                &system_context,
+            )
+            .unwrap();
+
+        let args = CommitBatchArguments {
+            batch_id: batch_id.clone(),
+            operations: vec![BatchOperation::SetAssetContent(SetAssetContentArguments {
+                key: "/images/logo.png".to_string(),
+                content_encoding: "identity".to_string(),
+                chunk_ids: vec![chunk_id],
+                last_chunk: None,
+                sha256: None,
+            })],
+        };
+        run_computation_until_completion(|progress| {
+            state.commit_batch(&args, progress, &system_context)
+        })
+        .unwrap();
+
+        let response = certified_http_request(
+            &state,
+            RequestBuilder::get("/images/logo.png")
+                .with_header("Accept-Encoding", "identity")
+                .build(),
+        );
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.body.as_ref(), b"NEW_PNG", "pinned assets should allow content updates");
     }
 }

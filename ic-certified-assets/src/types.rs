@@ -170,6 +170,16 @@ pub struct SetAssetPropertiesArguments {
     pub is_aliased: Option<Option<bool>>,
 }
 
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct PinDirectoryArguments {
+    pub prefix: String,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct UnpinDirectoryArguments {
+    pub prefix: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, CandidType, Deserialize)]
 pub enum Permission {
     Commit,

@@ -315,6 +315,11 @@ pub struct State {
     state_hash_computation: Option<EvidenceComputation>,
     last_state_update_timestamp_ns: u64,
     last_state_hash_timestamp: u64,
+
+    /// Path prefixes whose assets are protected from DeleteAsset, UnsetAssetContent,
+    /// and Clear batch operations. Useful for preserving branding or other
+    /// user-uploaded content across frontend re-deployments.
+    pinned_prefixes: BTreeSet<String>,
 }
 
 impl Asset {
@@ -376,6 +381,23 @@ impl Asset {
 }
 
 impl State {
+    /// Returns true if `key` falls under any pinned prefix.
+    fn is_pinned(&self, key: &str) -> bool {
+        self.pinned_prefixes.iter().any(|p| key.starts_with(p))
+    }
+
+    pub fn pin_directory(&mut self, prefix: String) {
+        self.pinned_prefixes.insert(prefix);
+    }
+
+    pub fn unpin_directory(&mut self, prefix: &str) {
+        self.pinned_prefixes.remove(prefix);
+    }
+
+    pub fn list_pinned_directories(&self) -> Vec<String> {
+        self.pinned_prefixes.iter().cloned().collect()
+    }
+
     fn get_asset(&self, key: &AssetKey) -> Result<&Asset, String> {
         self.assets
             .get(key)
@@ -544,6 +566,9 @@ impl State {
     }
 
     pub fn unset_asset_content(&mut self, arg: UnsetAssetContentArguments) -> Result<(), String> {
+        if self.is_pinned(&arg.key) {
+            return Ok(());
+        }
         let dependent_keys = self.dependent_keys(&arg.key);
         let asset = self
             .assets
@@ -564,6 +589,9 @@ impl State {
     }
 
     pub fn delete_asset(&mut self, arg: DeleteAssetArguments) {
+        if self.is_pinned(&arg.key) {
+            return;
+        }
         if self.assets.contains_key(&arg.key) {
             for dependent in self.dependent_keys(&arg.key) {
                 self.asset_hashes.remove_responses_for_path(&dependent);
@@ -587,7 +615,13 @@ impl State {
     }
 
     pub fn clear(&mut self) {
-        self.assets.clear();
+        if self.pinned_prefixes.is_empty() {
+            self.assets.clear();
+        } else {
+            let prefixes = &self.pinned_prefixes;
+            self.assets
+                .retain(|key, _| prefixes.iter().any(|p| key.starts_with(p)));
+        }
         self.batches.clear();
         self.chunks.clear();
         self.next_batch_id = Nat::from(1_u8);
@@ -1600,6 +1634,7 @@ impl From<StableStateV2> for State {
                 .map(Into::into)
                 .unwrap_or_default(),
             last_state_update_timestamp_ns: stable_state.last_state_update_timestamp.unwrap_or(0),
+            pinned_prefixes: stable_state.pinned_prefixes.unwrap_or_default(),
             ..Self::default()
         };
 

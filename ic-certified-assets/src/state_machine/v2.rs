@@ -24,6 +24,10 @@ pub struct StableStateV2 {
     pub(super) next_batch_id: Option<u64>,
     pub(super) configuration: Option<StableConfigurationV2>,
     pub(super) last_state_update_timestamp: Option<u64>,
+
+    /// Path prefixes protected from DeleteAsset/Clear during batch commits.
+    #[serde(default)]
+    pub(super) pinned_prefixes: Option<BTreeSet<String>>,
 }
 
 impl From<StableStateV1> for StableStateV2 {
@@ -39,6 +43,7 @@ impl From<StableStateV1> for StableStateV2 {
             next_batch_id: stable_state.next_batch_id.map(batch_id_to_u64),
             configuration: stable_state.configuration.map(Into::into),
             last_state_update_timestamp: None,
+            pinned_prefixes: None,
         }
     }
 }
@@ -49,6 +54,11 @@ impl From<super::State> for StableStateV2 {
             commit: state.commit_principals,
             prepare: state.prepare_principals,
             manage_permissions: state.manage_permissions_principals,
+        };
+        let pinned = if state.pinned_prefixes.is_empty() {
+            None
+        } else {
+            Some(state.pinned_prefixes)
         };
         Self {
             authorized: vec![],
@@ -61,6 +71,7 @@ impl From<super::State> for StableStateV2 {
             next_batch_id: Some(batch_id_to_u64(state.next_batch_id)),
             configuration: Some(state.configuration.into()),
             last_state_update_timestamp: Some(state.last_state_update_timestamp_ns),
+            pinned_prefixes: pinned,
         }
     }
 }
